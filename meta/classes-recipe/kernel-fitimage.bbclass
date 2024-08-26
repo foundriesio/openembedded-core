@@ -61,6 +61,8 @@ python __anonymous () {
                 d.appendVarFlag('do_assemble_fitimage_initramfs', 'depends', ' %s:do_populate_sysroot' % uboot_pn)
 }
 
+# Default value for deployment filenames
+FIT_LOADABLES ?= ""
 
 # Description string
 FIT_DESC ?= "Kernel fitImage for ${DISTRO_NAME}/${PV}/${MACHINE}"
@@ -375,7 +377,8 @@ symlink_points_below() {
 # $4 ... ramdisk ID
 # $5 ... u-boot script ID
 # $6 ... config ID
-# $7 ... default flag
+# $7 ... loadable ID
+# $8 ... default flag
 fitimage_emit_section_config() {
 
 	conf_csum="${FIT_HASH_ALG}"
@@ -402,6 +405,7 @@ fitimage_emit_section_config() {
 	ramdisk_line=""
 	bootscr_line=""
 	setup_line=""
+	loadable_line=""
 	default_line=""
 	default_dtb_image="${FIT_CONF_DEFAULT_DTB}"
 
@@ -453,6 +457,19 @@ fitimage_emit_section_config() {
 		setup_line="setup = \"setup-$config_id\";"
 	fi
 
+	if [ -n "$loadable_id" ]; then
+		loadable_counter=0
+		for LOADABLE in $loadable_id; do
+			if [ -e ${DEPLOY_DIR_IMAGE}/${LOADABLE} ]; then
+				loadable_counter=`expr ${loadable_counter} + 1`
+				if [ -z "${loadable_line}" ]; then
+					conf_desc="${conf_desc}${sep}loadables"
+				fi
+				loadable_line="${loadable_line}loadable_${loadable_counter} = \"loadable-${LOADABLE}\"; "
+			fi
+		done
+	fi
+
 	if [ "$default_flag" = "1" ]; then
 		# default node is selected based on dtb ID if it is present,
 		# otherwise its selected based on kernel ID
@@ -483,6 +500,7 @@ fitimage_emit_section_config() {
                         $ramdisk_line
                         $bootscr_line
                         $setup_line
+						$loadable_line
                         hash-1 {
                                 algo = "$conf_csum";
                         };
@@ -517,6 +535,16 @@ EOF
 			sign_line="$sign_line${sep}\"setup\""
 		fi
 
+		if [ -n "$loadable_id" ]; then
+			loadable_counter=0
+			for LOADABLE in $loadable_id; do
+				if [ -e ${DEPLOY_DIR_IMAGE}/${LOADABLE} ]; then
+					loadable_counter=`expr ${loadable_counter} + 1`
+					sign_line="$sign_line${sep}\"loadable_${loadable_counter}\""
+				fi
+			done
+		fi
+
 		sign_line="$sign_line;"
 
 		cat << EOF >> $its_file
@@ -534,6 +562,30 @@ EOF
 EOF
 }
 
+
+#
+# Emit the fitImage ITS loadables section
+#
+# $1 ... .its filename
+# $2 ... Image name
+# $3 ... Path to loadable image
+fitimage_emit_section_loadable() {
+
+	loadable_csum="${FIT_HASH_ALG}"
+
+	cat << EOF >> $1
+                loadable-$2 {
+                        description = "Loadable";
+                        data = /incbin/("$3");
+                        type = "loadable";
+                        arch = "${UBOOT_ARCH}";
+                        compression = "none";
+                        hash-1 {
+                                algo = "${loadable_csum=}";
+                        };
+                };
+EOF
+}
 #
 # Assemble fitImage
 #
@@ -634,7 +686,18 @@ fitimage_assemble() {
 	fi
 
 	#
-	# Step 5: Prepare a ramdisk section.
+	# Step 5: Prepare a loadable sections.
+	#
+	if [ -n "${FIT_LOADABLES}" ]; then
+		for LOADABLE in ${FIT_LOADABLES}; do
+			if [ -e ${DEPLOY_DIR_IMAGE}/${LOADABLE} ]; then
+				fitimage_emit_section_loadable $1 "${LOADABLE}" ${DEPLOY_DIR_IMAGE}/${LOADABLE}
+			fi
+		done
+	fi
+
+	#
+	# Step 6: Prepare a ramdisk section.
 	#
 	if [ "x${ramdiskcount}" = "x1" ] && [ "${INITRAMFS_IMAGE_BUNDLE}" != "1" ]; then
 		# Find and use the first initramfs image archive type we find
@@ -665,7 +728,7 @@ fitimage_assemble() {
 	fi
 
 	#
-	# Step 6: Prepare a configurations section
+	# Step 7: Prepare a configurations section
 	#
 	fitimage_emit_section_maint $1 confstart
 
